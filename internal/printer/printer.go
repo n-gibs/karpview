@@ -1,0 +1,252 @@
+package printer
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/nikgibson/karpview/internal/analyzer"
+	"golang.org/x/term"
+)
+
+const (
+	colorRed    = "\033[31m"
+	colorGreen  = "\033[32m"
+	colorYellow = "\033[33m"
+	colorReset  = "\033[0m"
+)
+
+// isColorEnabled returns true when the output stream supports color.
+// It respects the NO_COLOR convention (https://no-color.org) and checks
+// whether w is a terminal via golang.org/x/term.
+func isColorEnabled(w io.Writer) bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	if os.Getenv("TERM") == "dumb" {
+		return false
+	}
+	if f, ok := w.(*os.File); ok {
+		return term.IsTerminal(int(f.Fd()))
+	}
+	return false
+}
+
+// Print writes the analysis results to w with colored, aligned columns.
+func Print(w io.Writer, clusterName string, results []analyzer.NodeResult) {
+	color := isColorEnabled(w)
+
+	fmt.Fprintf(w, "\nCluster: %s\n\n", sanitize(clusterName))
+
+	if len(results) == 0 {
+		fmt.Fprintln(w, "No nodes found.")
+		return
+	}
+
+	// Sort: BLOCKED nodes first, DRAINING second, then others.
+	sort.SliceStable(results, func(i, j int) bool {
+		ri, rj := statusRank(results[i].Status), statusRank(results[j].Status)
+		if ri != rj {
+			return ri < rj
+		}
+		return results[i].NodeName < results[j].NodeName
+	})
+
+	// Calculate column widths for alignment.
+	maxName := 0
+	maxPool := 0
+	maxConsolidation := len("daemon-only")    // minimum — longest static value
+	maxPolicy := len("WhenUnderutilized")     // minimum — longest static abbreviation
+	maxBudget := len("BUDGET")               // minimum — header width
+	for _, r := range results {
+		if len(r.NodeName) > maxName {
+			maxName = len(r.NodeName)
+		}
+		if len(r.NodePool) > maxPool {
+			maxPool = len(r.NodePool)
+		}
+		if n := len(formatConsolidation(r)); n > maxConsolidation {
+			maxConsolidation = n
+		}
+		if n := len(formatPolicy(r)); n > maxPolicy {
+			maxPolicy = n
+		}
+		if n := len(r.BudgetDisplay); n > maxBudget {
+			maxBudget = n
+		}
+	}
+
+	blockedCount := 0
+	drainingCount := 0
+	for _, r := range results {
+		status := formatStatus(r.Status, color)
+		reason := formatReason(r)
+
+		fmt.Fprintf(w, "%s  %-*s   NodePool: %-*s   %-*s   %-*s   %-*s   %s\n",
+			status,
+			maxName, sanitize(r.NodeName),
+			maxPool, sanitize(r.NodePool),
+			maxConsolidation, formatConsolidation(r),
+			maxPolicy, formatPolicy(r),
+			maxBudget, sanitize(r.BudgetDisplay),
+			reason,
+		)
+		switch r.Status {
+		case analyzer.StatusBlocked:
+			blockedCount++
+		case analyzer.StatusDraining:
+			drainingCount++
+		}
+	}
+	fmt.Fprintf(w, "\n%d node(s) blocked, %d draining / %d total\n\n",
+		blockedCount, drainingCount, len(results))
+}
+
+// statusRank controls print order: lower rank prints first.
+// BLOCKED=0, DRAINING=1, READY/UNKNOWN=2.
+func statusRank(s analyzer.NodeStatus) int {
+	switch s {
+	case analyzer.StatusBlocked:
+		return 0
+	case analyzer.StatusDraining:
+		return 1
+	default:
+		return 2
+	}
+}
+
+// formatStatus returns the status string, optionally with ANSI color codes.
+func formatStatus(s analyzer.NodeStatus, color bool) string {
+	switch s {
+	case analyzer.StatusBlocked:
+		if color {
+			return fmt.Sprintf("%s%-8s%s", colorRed, s, colorReset)
+		}
+		return fmt.Sprintf("%-8s", s)
+	case analyzer.StatusDraining:
+		if color {
+			return fmt.Sprintf("%s%-8s%s", colorYellow, s, colorReset)
+		}
+		return fmt.Sprintf("%-8s", s)
+	case analyzer.StatusConsolidatable:
+		if color {
+			return fmt.Sprintf("%s%-8s%s", colorGreen, s, colorReset)
+		}
+		return fmt.Sprintf("%-8s", s)
+	default:
+		return fmt.Sprintf("%-8s", s)
+	}
+}
+
+// sanitize removes ANSI CSI escape sequences and non-printable runes from s
+// in a single pass, allocating one strings.Builder instead of two.
+func sanitize(s string) string {
+	var out strings.Builder
+	out.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		// Strip ANSI CSI: ESC [ <params> <final-byte 0x40-0x7e>
+		if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '[' {
+			i += 2
+			for i < len(s) && (s[i] < 0x40 || s[i] > 0x7e) {
+				i++
+			}
+			if i < len(s) {
+				i++ // consume final byte
+			}
+			continue
+		}
+
+		// Decode one UTF-8 rune and filter non-printable.
+		r, size := rune(s[i]), 1
+		if s[i] >= 0x80 {
+			r, size = utf8.DecodeRuneInString(s[i:])
+		}
+		if unicode.IsPrint(r) {
+			out.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	return out.String()
+}
+
+// formatConsolidation returns the consolidation classification string for display.
+func formatConsolidation(r analyzer.NodeResult) string {
+	switch r.ConsolidationClass {
+	case analyzer.ConsolidationEmpty:
+		return "empty"
+	case analyzer.ConsolidationDaemonOnly:
+		return "daemon-only"
+	default:
+		return fmt.Sprintf("%d%% cpu / %d%% mem",
+			int(r.CPURequestFraction*100),
+			int(r.MemRequestFraction*100),
+		)
+	}
+}
+
+// formatPolicy returns the POLICY column value for a node result.
+// WhenEmptyOrUnderutilized is abbreviated to WhenUnderutilized for column width.
+// A [skip] suffix is added when the policy is WhenEmpty but the node has
+// non-daemon workload pods — Karpenter will never target this node for
+// consolidation regardless of utilization, so the CONSOLIDATION column alone
+// is misleading without this flag.
+func formatPolicy(r analyzer.NodeResult) string {
+	if r.NodePoolPolicy == "" {
+		return "—"
+	}
+	var policy string
+	switch r.NodePoolPolicy {
+	case "WhenEmpty":
+		policy = "WhenEmpty"
+	case "WhenEmptyOrUnderutilized":
+		policy = "WhenUnderutilized"
+	default:
+		policy = r.NodePoolPolicy
+	}
+	if r.ConsolidateAfter != "" {
+		policy = fmt.Sprintf("%s (%s)", policy, r.ConsolidateAfter)
+	}
+	if r.NodePoolPolicy == "WhenEmpty" && r.ConsolidationClass == analyzer.ConsolidationNormal {
+		policy += " [skip]"
+	}
+	return policy
+}
+
+// formatReason returns a human-readable reason string for a node result.
+func formatReason(r analyzer.NodeResult) string {
+	switch r.Status {
+	case analyzer.StatusConsolidatable:
+		return "—"
+	case analyzer.StatusDraining:
+		return "Disruption in progress"
+	case analyzer.StatusUnknown:
+		return "Unknown"
+	}
+
+	parts := make([]string, 0, len(r.Blockers))
+	for _, b := range r.Blockers {
+		switch b.Type {
+		case "PDB":
+			if b.PodName != "" {
+				parts = append(parts, fmt.Sprintf("PDB: %s (%s) via %s",
+					sanitize(b.Name), sanitize(b.Namespace), sanitize(b.PodName)))
+			} else {
+				parts = append(parts, fmt.Sprintf("PDB: %s (%s)",
+					sanitize(b.Name), sanitize(b.Namespace)))
+			}
+		case "Terminating":
+			parts = append(parts, fmt.Sprintf("Terminating: %s (%s)",
+				sanitize(b.Name), sanitize(b.Namespace)))
+		case "Annotation":
+			parts = append(parts, fmt.Sprintf("Annotation: %s", sanitize(b.Name)))
+		default:
+			parts = append(parts, fmt.Sprintf("%s: %s", sanitize(b.Type), sanitize(b.Name)))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
