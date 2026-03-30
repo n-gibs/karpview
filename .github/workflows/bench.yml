@@ -1,0 +1,298 @@
+name: Performance Regression
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write  # required to post PR comments
+
+jobs:
+  benchmark:
+    name: Benchmark & Regression Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Fetch full history so we can check out main for baseline generation
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install benchstat
+        run: go install golang.org/x/perf/cmd/benchstat@latest
+
+      # -----------------------------------------------------------------------
+      # Step 1 — Run benchmarks for the current PR/commit (5 runs for stability)
+      # -----------------------------------------------------------------------
+      - name: Run benchmarks (PR / current commit)
+        run: |
+          go test \
+            -bench=BenchmarkAnalyze \
+            -benchmem \
+            -count=5 \
+            -timeout=120s \
+            ./internal/analyzer/ \
+            | tee /tmp/bench-pr.txt
+
+      # -----------------------------------------------------------------------
+      # Step 2 — Restore main baseline from cache, keyed to the latest main SHA
+      # -----------------------------------------------------------------------
+      - name: Get main branch HEAD SHA
+        id: main-sha
+        run: |
+          SHA=$(git rev-parse origin/main)
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore main baseline from cache
+        id: cache-baseline
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/bench-main.txt
+          key: bench-baseline-${{ steps.main-sha.outputs.sha }}
+
+      # -----------------------------------------------------------------------
+      # Step 3 — If no cache hit, generate a fresh baseline from main
+      #           (happens on first run after each main push)
+      # -----------------------------------------------------------------------
+      - name: Generate main baseline (cache miss)
+        if: steps.cache-baseline.outputs.cache-hit != 'true'
+        run: |
+          git stash --include-untracked 2>/dev/null || true
+          git checkout origin/main -- internal/analyzer/
+          go test \
+            -bench=BenchmarkAnalyze \
+            -benchmem \
+            -count=5 \
+            -timeout=120s \
+            ./internal/analyzer/ \
+            | tee /tmp/bench-main.txt
+          git checkout HEAD -- internal/analyzer/
+          git stash pop 2>/dev/null || true
+
+      - name: Save main baseline to cache
+        if: steps.cache-baseline.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/bench-main.txt
+          key: bench-baseline-${{ steps.main-sha.outputs.sha }}
+
+      # -----------------------------------------------------------------------
+      # Step 4 — Compare with benchstat and enforce thresholds
+      # -----------------------------------------------------------------------
+      - name: Compare benchmarks with benchstat
+        id: benchstat
+        run: |
+          OUTPUT=$(benchstat /tmp/bench-main.txt /tmp/bench-pr.txt 2>&1)
+          echo "------- benchstat output -------"
+          echo "$OUTPUT"
+          # Write to a file so the next step and PR comment can read it safely
+          echo "$OUTPUT" > /tmp/benchstat-result.txt
+
+      - name: Enforce performance budget thresholds
+        run: |
+          python3 - << 'PYEOF'
+          import re, sys
+
+          # Thresholds: (metric_keyword, max_regression_pct, label)
+          THRESHOLDS = [
+              ("ns/op",     10.0, "Analyze time (ns/op)"),
+              ("allocs/op", 10.0, "Allocs/op"),
+              ("B/op",      15.0, "Memory (B/op)"),
+          ]
+
+          with open("/tmp/benchstat-result.txt") as f:
+              text = f.read()
+
+          failures = []
+          warnings = []
+          # benchstat prints delta like "+12.34%" or "-3.21%" per column
+          delta_re = re.compile(r'([+-]\d+\.\d+)%')
+
+          for line in text.splitlines():
+              for keyword, limit, label in THRESHOLDS:
+                  if keyword in line and "BenchmarkAnalyze" in line:
+                      m = delta_re.search(line)
+                      if m:
+                          delta = float(m.group(1))
+                          if delta > limit:
+                              failures.append(
+                                  f"BLOCK [{label}]: regressed +{delta:.1f}% "
+                                  f"(hard limit +{limit}%)\n  {line.strip()}"
+                              )
+                          elif delta > limit * 0.75:
+                              warnings.append(
+                                  f"WARN [{label}]: +{delta:.1f}% is within 25% of "
+                                  f"the +{limit}% hard limit\n  {line.strip()}"
+                              )
+
+          for w in warnings:
+              print(w)
+
+          if failures:
+              print("\n=== PERFORMANCE REGRESSION — PR BLOCKED ===")
+              for f in failures:
+                  print(f)
+              sys.exit(1)
+          else:
+              print("All performance budgets passed.")
+          PYEOF
+
+      # -----------------------------------------------------------------------
+      # Step 4b — Notify Slack on hard regression (runs only when step 4 fails)
+      # -----------------------------------------------------------------------
+      - name: Notify Slack on regression
+        if: false  # disabled until SLACK_WEBHOOK_URL secret is configured
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          BENCH_SUMMARY=$(head -20 /tmp/benchstat-result.txt)
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n \
+              --arg bench "$BENCH_SUMMARY" \
+              --arg pr_url "$PR_URL" \
+              --arg pr_title "$PR_TITLE" \
+              --arg actor "$ACTOR" \
+              --arg run_url "$RUN_URL" \
+              '{
+                "text": ":rotating_light: *KarpView Performance Regression — PR Blocked*",
+                "blocks": [
+                  {"type": "header", "text": {"type": "plain_text", "text": "Performance Regression — PR Blocked"}},
+                  {"type": "section", "fields": [
+                    {"type": "mrkdwn", "text": ("*PR:*\n<" + $pr_url + "|" + $pr_title + ">")},
+                    {"type": "mrkdwn", "text": ("*Author:*\n" + $actor)},
+                    {"type": "mrkdwn", "text": ("*Run:*\n<" + $run_url + "|View in Actions>")}
+                  ]},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": ("*benchstat delta:*\n```" + $bench + "```")}},
+                  {"type": "section", "text": {"type": "mrkdwn", "text": "Thresholds: time `+10%` | memory `+15%` | allocs `+10%`"}}
+                ]
+              }')"
+
+      # -----------------------------------------------------------------------
+      # Step 5 — Post benchstat delta as a PR comment
+      #           The benchstat output is read from a file to avoid expression
+      #           injection; we pass it to the script via an environment variable.
+      # -----------------------------------------------------------------------
+      - name: Post benchmark results to PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          BENCH_OUTPUT=$(cat /tmp/benchstat-result.txt)
+          BODY="## Benchmark Results
+
+          Comparison: \`main\` baseline → this PR (5 runs each via \`benchstat\`)
+
+          \`\`\`
+          ${BENCH_OUTPUT}
+          \`\`\`
+
+          **Budget thresholds:** time \`≤+10%\` | memory \`≤+15%\` | allocs \`≤+10%\` | binary \`≤30 MB\`
+
+          > Generated by the Performance Regression workflow"
+
+          # Update existing bot comment or create a new one
+          EXISTING=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]") | select(.body | startswith("## Benchmark Results")) | .id' \
+            | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            gh api "repos/${REPO}/issues/comments/${EXISTING}" \
+              -X PATCH \
+              -f body="$BODY"
+          else
+            gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+              -X POST \
+              -f body="$BODY"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Binary size gate — separate job, runs in parallel with benchmark
+  # ---------------------------------------------------------------------------
+  binary-size:
+    name: Binary Size Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build stripped binary
+        run: |
+          go build \
+            -ldflags="-s -w -X main.version=${GITHUB_SHA::8}" \
+            -o /tmp/karpview \
+            .
+
+      - name: Check binary size
+        id: size-check
+        run: |
+          SIZE_BYTES=$(stat -c%s /tmp/karpview)
+          SIZE_MB=$(echo "scale=2; $SIZE_BYTES / 1048576" | bc)
+          LIMIT_MB=30
+          LIMIT_BYTES=$((LIMIT_MB * 1024 * 1024))
+
+          echo "Binary size: ${SIZE_MB} MB (${SIZE_BYTES} bytes)"
+          echo "Budget:      ${LIMIT_MB} MB"
+          echo "size_mb=${SIZE_MB}" >> "$GITHUB_OUTPUT"
+
+          if [ "$SIZE_BYTES" -gt "$LIMIT_BYTES" ]; then
+            echo "FAIL: binary size ${SIZE_MB} MB exceeds ${LIMIT_MB} MB budget"
+            exit 1
+          fi
+
+          WARN_BYTES=$(( LIMIT_BYTES * 85 / 100 ))
+          if [ "$SIZE_BYTES" -gt "$WARN_BYTES" ]; then
+            echo "WARN: binary size ${SIZE_MB} MB is within 15% of the ${LIMIT_MB} MB budget"
+            echo "warn=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "PASS: binary size ${SIZE_MB} MB is within budget"
+          fi
+
+          echo "### Binary Size: ${SIZE_MB} MB / 30 MB budget" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Notify Slack on binary size warning
+        if: false  # disabled until SLACK_WEBHOOK_URL secret is configured
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SIZE_MB: ${{ steps.size-check.outputs.size_mb }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n \
+              --arg size "$SIZE_MB" \
+              --arg run_url "$RUN_URL" \
+              '{"text": (":warning: *KarpView binary size warning: " + $size + " MB / 30 MB budget*\nBinary is within 15% of the hard limit. Review dependency additions.\n<" + $run_url + "|View run>")}')"
+
+      - name: Notify Slack on binary size breach
+        if: false  # disabled until SLACK_WEBHOOK_URL secret is configured
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SIZE_MB: ${{ steps.size-check.outputs.size_mb }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n \
+              --arg size "$SIZE_MB" \
+              --arg run_url "$RUN_URL" \
+              '{"text": (":x: *KarpView binary size EXCEEDED 30 MB hard limit (" + $size + " MB) — release blocked*\n<" + $run_url + "|View run>")}')"

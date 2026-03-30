@@ -1,0 +1,34 @@
+linters:
+  enable:
+    - errcheck
+    - exhaustive
+    - goconst
+    - gocritic
+    - gosec
+    - govet
+    - revive
+    - staticcheck
+    - unused
+
+linters-settings:
+  exhaustive:
+    default-signifies-exhaustive: false
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+      - style
+  revive:
+    rules:
+      - name: exported
+      - name: var-naming
+      - name: error-return
+  gosec:
+    excludes:
+      - G304 # file path from variable — acceptable in CLI tools
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec

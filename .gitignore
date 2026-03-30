@@ -1,0 +1,9 @@
+# Built binary
+karpview
+
+# Go build cache
+*.test
+*.out
+
+# OS
+.DS_Store
