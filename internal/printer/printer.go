@@ -217,6 +217,75 @@ func formatPolicy(r analyzer.NodeResult) string {
 	return policy
 }
 
+// PrintBudgets writes per-NodePool budget summaries to w.
+// One block per NodePool, rules indented underneath.
+func PrintBudgets(w io.Writer, clusterName string, summaries []analyzer.NodePoolBudgetSummary) {
+	color := isColorEnabled(w)
+	fmt.Fprintf(w, "Cluster: %s\n", sanitize(clusterName))
+
+	if len(summaries) == 0 {
+		fmt.Fprintln(w, "No NodePools found.")
+		return
+	}
+
+	blockedPools := 0
+	for _, s := range summaries {
+		policy := s.Policy
+		if policy == "WhenEmptyOrUnderutilized" {
+			policy = "WhenUnderutilized"
+		}
+		policyPart := ""
+		if policy != "" {
+			policyPart = fmt.Sprintf("  (%s)", policy)
+		}
+		fmt.Fprintf(w, "\nNodePool: %s%s   %d nodes / %d deleting / %d not-ready\n",
+			sanitize(s.PoolName), policyPart,
+			s.Stats.Total, s.Stats.Deleting, s.Stats.NotReady)
+
+		poolBlocked := false
+		for _, r := range s.Rules {
+			reasons := "all"
+			if len(r.Reasons) > 0 {
+				reasons = strings.Join(r.Reasons, ",")
+			}
+			window := "always"
+			if r.Schedule != "" {
+				window = r.Schedule
+				if r.Duration != "" {
+					window += "/" + r.Duration
+				}
+			}
+
+			if !r.WindowActive {
+				marker := "[inactive]"
+				if color {
+					marker = colorYellow + marker + colorReset
+				}
+				fmt.Fprintf(w, "  nodes: %-5s  reasons: %-12s  window: %s  %s\n",
+					r.Nodes, reasons, window, marker)
+			} else {
+				headroom := fmt.Sprintf("headroom: %d/%d", r.Headroom, s.Stats.Total)
+				suffix := ""
+				if r.Blocked {
+					m := "[BLOCKED]"
+					if color {
+						m = colorRed + m + colorReset
+					}
+					suffix = "  " + m
+					poolBlocked = true
+				}
+				fmt.Fprintf(w, "  nodes: %-5s  reasons: %-12s  window: %-22s  %s%s\n",
+					r.Nodes, reasons, window, headroom, suffix)
+			}
+		}
+		if poolBlocked {
+			blockedPools++
+		}
+	}
+
+	fmt.Fprintf(w, "\n%d NodePool(s) / %d with blocked budgets\n", len(summaries), blockedPools)
+}
+
 // formatReason returns a human-readable reason string for a node result.
 func formatReason(r analyzer.NodeResult) string {
 	switch r.Status {

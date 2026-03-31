@@ -368,3 +368,90 @@ func TestPrint_PolicyColumn(t *testing.T) {
 		t.Errorf("expected 'WhenEmpty [skip]' for normal-class WhenEmpty node, got:\n%s", out)
 	}
 }
+
+func TestPrintBudgets(t *testing.T) {
+	summaries := []analyzer.NodePoolBudgetSummary{
+		{
+			PoolName: "default",
+			Policy:   "WhenEmptyOrUnderutilized",
+			Stats:    analyzer.PoolStats{Total: 10, Deleting: 2, NotReady: 0},
+			Rules: []analyzer.BudgetRuleResult{
+				{
+					Nodes:        "20%",
+					Reasons:      nil,
+					WindowActive: true,
+					Headroom:     0,
+					Blocked:      true,
+				},
+				{
+					Nodes:        "0",
+					Reasons:      []string{"Drifted"},
+					Schedule:     "@daily",
+					Duration:     "10m",
+					WindowActive: false,
+					Blocked:      false,
+				},
+			},
+		},
+		{
+			PoolName: "spot",
+			Policy:   "WhenEmpty",
+			Stats:    analyzer.PoolStats{Total: 4, Deleting: 0, NotReady: 0},
+			Rules: []analyzer.BudgetRuleResult{
+				{
+					Nodes:        "10%",
+					Reasons:      []string{"Empty"},
+					WindowActive: true,
+					Headroom:     1,
+					Blocked:      false,
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	PrintBudgets(&buf, "my-cluster", summaries)
+	out := buf.String()
+
+	// cluster header
+	if !strings.Contains(out, "my-cluster") {
+		t.Errorf("expected cluster name; got:\n%s", out)
+	}
+	// pool names
+	if !strings.Contains(out, "NodePool: default") {
+		t.Errorf("expected 'NodePool: default'; got:\n%s", out)
+	}
+	if !strings.Contains(out, "NodePool: spot") {
+		t.Errorf("expected 'NodePool: spot'; got:\n%s", out)
+	}
+	// policy abbreviation
+	if !strings.Contains(out, "WhenUnderutilized") {
+		t.Errorf("expected abbreviated policy 'WhenUnderutilized'; got:\n%s", out)
+	}
+	// blocked rule: [BLOCKED] marker and headroom format
+	if !strings.Contains(out, "[BLOCKED]") {
+		t.Errorf("expected '[BLOCKED]' for blocked rule; got:\n%s", out)
+	}
+	if !strings.Contains(out, "headroom: 0/10") {
+		t.Errorf("expected 'headroom: 0/10'; got:\n%s", out)
+	}
+	// inactive schedule rule
+	if !strings.Contains(out, "[inactive]") {
+		t.Errorf("expected '[inactive]' for inactive rule; got:\n%s", out)
+	}
+	// reasons: all when nil
+	if !strings.Contains(out, "reasons: all") {
+		t.Errorf("expected 'reasons: all' for nil reasons; got:\n%s", out)
+	}
+	// headroom for spot pool
+	if !strings.Contains(out, "headroom: 1/4") {
+		t.Errorf("expected 'headroom: 1/4' for spot pool; got:\n%s", out)
+	}
+	// footer: 2 pools, 1 blocked
+	if !strings.Contains(out, "2 NodePool(s)") {
+		t.Errorf("expected '2 NodePool(s)' in footer; got:\n%s", out)
+	}
+	if !strings.Contains(out, "1 with blocked budgets") {
+		t.Errorf("expected '1 with blocked budgets' in footer; got:\n%s", out)
+	}
+}
