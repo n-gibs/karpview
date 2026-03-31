@@ -72,6 +72,9 @@ func main() {
 // run is the testable entry point. fetcher may be nil, in which case a real
 // cluster client is created from the flags.
 func run(args []string, stdout, stderr io.Writer, fetcher cluster.Fetcher) int {
+	if len(args) > 0 && args[0] == "budgets" {
+		return runBudgets(args[1:], stdout, stderr, fetcher)
+	}
 	rid := newRunID()
 	jsonLog := os.Getenv("KARPVIEW_LOG_FORMAT") == "json"
 
@@ -234,4 +237,106 @@ func printJSON(w io.Writer, results []analyzer.NodeResult) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(nodes)
+}
+
+// runBudgets implements the "karpview budgets" subcommand.
+func runBudgets(args []string, stdout, stderr io.Writer, fetcher cluster.Fetcher) int {
+	fs := flag.NewFlagSet("karpview budgets", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	kubeContext := fs.String("context", "", "kubeconfig context to use (default: current context)")
+	timeout := fs.Duration("timeout", 30*time.Second, "timeout for Kubernetes API calls")
+	outputFormat := fs.String("o", "text", "output format: text or json")
+	fs.StringVar(outputFormat, "output", "text", "output format: text or json")
+
+	if err := fs.Parse(args); err != nil {
+		return exitError
+	}
+
+	if *outputFormat != "text" && *outputFormat != "json" {
+		fmt.Fprintf(stderr, "error: unsupported output format %q (use \"text\" or \"json\")\n", *outputFormat)
+		return exitError
+	}
+
+	if fetcher == nil {
+		clients, err := cluster.New(*kubeContext)
+		if err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return exitError
+		}
+		fetcher = clients
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+
+	data, err := fetcher.Fetch(ctx)
+	if err != nil {
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return exitError
+	}
+
+	summaries := analyzer.AnalyzeBudgets(data)
+
+	switch *outputFormat {
+	case "json":
+		printBudgetsJSON(stdout, summaries)
+	default:
+		printer.PrintBudgets(stdout, data.ClusterName, summaries)
+	}
+
+	return exitOK
+}
+
+type jsonBudgetStats struct {
+	Total    int `json:"total"`
+	Deleting int `json:"deleting"`
+	NotReady int `json:"notReady"`
+}
+
+type jsonBudgetRule struct {
+	Nodes        string   `json:"nodes"`
+	Reasons      []string `json:"reasons"`
+	Schedule     string   `json:"schedule"`
+	Duration     string   `json:"duration"`
+	WindowActive bool     `json:"windowActive"`
+	Headroom     int      `json:"headroom"`
+	Blocked      bool     `json:"blocked"`
+}
+
+type jsonBudgetSummary struct {
+	PoolName string           `json:"poolName"`
+	Policy   string           `json:"policy"`
+	Stats    jsonBudgetStats  `json:"stats"`
+	Rules    []jsonBudgetRule `json:"rules"`
+}
+
+func printBudgetsJSON(w io.Writer, summaries []analyzer.NodePoolBudgetSummary) {
+	out := make([]jsonBudgetSummary, len(summaries))
+	for i, s := range summaries {
+		rules := make([]jsonBudgetRule, len(s.Rules))
+		for j, r := range s.Rules {
+			rules[j] = jsonBudgetRule{
+				Nodes:        r.Nodes,
+				Reasons:      r.Reasons,
+				Schedule:     r.Schedule,
+				Duration:     r.Duration,
+				WindowActive: r.WindowActive,
+				Headroom:     r.Headroom,
+				Blocked:      r.Blocked,
+			}
+		}
+		out[i] = jsonBudgetSummary{
+			PoolName: s.PoolName,
+			Policy:   s.Policy,
+			Stats: jsonBudgetStats{
+				Total:    s.Stats.Total,
+				Deleting: s.Stats.Deleting,
+				NotReady: s.Stats.NotReady,
+			},
+			Rules: rules,
+		}
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(out)
 }

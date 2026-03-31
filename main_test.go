@@ -11,6 +11,7 @@ import (
 	"github.com/nikgibson/karpview/internal/cluster"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // fakeFetcher is a test double that returns pre-configured cluster data.
@@ -193,4 +194,99 @@ func TestRun_InvalidOutputFormat_ExitsTwo(t *testing.T) {
 	if !strings.Contains(stderr.String(), "unsupported output format") {
 		t.Errorf("expected error message about unsupported format; got: %s", stderr.String())
 	}
+}
+
+func TestRunBudgets_Integration(t *testing.T) {
+	np1 := unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"name": "default"},
+		"spec": map[string]any{
+			"disruption": map[string]any{
+				"consolidationPolicy": "WhenEmptyOrUnderutilized",
+				"budgets":             []any{map[string]any{"nodes": "20%"}},
+			},
+		},
+	}}
+	np2 := unstructured.Unstructured{Object: map[string]any{
+		"metadata": map[string]any{"name": "spot"},
+		"spec": map[string]any{
+			"disruption": map[string]any{
+				"consolidationPolicy": "WhenEmpty",
+				"budgets":             []any{map[string]any{"nodes": "10%"}},
+			},
+		},
+	}}
+	fetcher := &fakeFetcher{
+		data: &cluster.ClusterData{
+			ClusterName: "test-cluster",
+			NodePools:   []unstructured.Unstructured{np1, np2},
+			Nodes: []corev1.Node{
+				{ObjectMeta: metav1.ObjectMeta{
+					Name:   "default-node-0",
+					Labels: map[string]string{"karpenter.sh/nodepool": "default"},
+				}},
+				{ObjectMeta: metav1.ObjectMeta{
+					Name:   "spot-node-0",
+					Labels: map[string]string{"karpenter.sh/nodepool": "spot"},
+				}},
+			},
+		},
+	}
+
+	t.Run("text output exits 0", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"budgets"}, &stdout, &stderr, fetcher)
+		if code != 0 {
+			t.Errorf("want exit 0, got %d (stderr: %s)", code, stderr.String())
+		}
+		out := stdout.String()
+		if !strings.Contains(out, "default") {
+			t.Errorf("expected pool 'default' in output; got:\n%s", out)
+		}
+		if !strings.Contains(out, "spot") {
+			t.Errorf("expected pool 'spot' in output; got:\n%s", out)
+		}
+	})
+
+	t.Run("blocked state still exits 0", func(t *testing.T) {
+		// Blocked budgets must not change exit code for budgets subcommand
+		blockedFetcher := &fakeFetcher{
+			data: &cluster.ClusterData{
+				ClusterName: "test-cluster",
+				NodePools: []unstructured.Unstructured{{Object: map[string]any{
+					"metadata": map[string]any{"name": "default"},
+					"spec": map[string]any{
+						"disruption": map[string]any{
+							"budgets": []any{map[string]any{"nodes": "0"}},
+						},
+					},
+				}}},
+				Nodes: []corev1.Node{
+					{ObjectMeta: metav1.ObjectMeta{
+						Name:   "default-node-0",
+						Labels: map[string]string{"karpenter.sh/nodepool": "default"},
+					}},
+				},
+			},
+		}
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"budgets"}, &stdout, &stderr, blockedFetcher)
+		if code != 0 {
+			t.Errorf("want exit 0 even when budgets blocked, got %d", code)
+		}
+	})
+
+	t.Run("json output is valid array", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"budgets", "-o", "json"}, &stdout, &stderr, fetcher)
+		if code != 0 {
+			t.Errorf("want exit 0, got %d", code)
+		}
+		var arr []map[string]any
+		if err := json.Unmarshal(stdout.Bytes(), &arr); err != nil {
+			t.Errorf("want valid JSON array, got error: %v\noutput: %s", err, stdout.String())
+		}
+		if len(arr) != 2 {
+			t.Errorf("want 2 pools in JSON, got %d", len(arr))
+		}
+	})
 }
