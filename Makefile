@@ -1,4 +1,4 @@
-.PHONY: build test lint vet govulncheck clean bench bench-update bench-compare size
+.PHONY: build test lint vet govulncheck clean bench bench-update bench-compare size release
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
@@ -36,6 +36,28 @@ bench-compare:
 	go test -bench=BenchmarkAnalyze -benchmem -count=5 ./internal/analyzer/ \
 	  > /tmp/bench-local.txt
 	benchstat internal/analyzer/testdata/bench-baseline.txt /tmp/bench-local.txt
+
+## release: build darwin binary, upload GitHub release, print SHA256 for cask update
+## Usage: make release VERSION=v0.1.0 [ARCH=arm64|amd64]
+ARCH ?= arm64
+RELEASE_TARBALL = karpview-$(VERSION)-darwin-$(ARCH).tar.gz
+RELEASE_BINARY  = karpview-darwin-$(ARCH)
+
+release:
+ifndef VERSION
+	$(error VERSION is required — e.g. make release VERSION=v0.1.0)
+endif
+	@echo "==> Building karpview $(VERSION) darwin/$(ARCH)"
+	GOOS=darwin GOARCH=$(ARCH) go build -ldflags="-s -w -X main.version=$(VERSION)" -o $(RELEASE_BINARY) .
+	tar czf $(RELEASE_TARBALL) $(RELEASE_BINARY)
+	@echo "==> SHA256 (paste into tap/Casks/karpview.rb):"
+	@shasum -a 256 $(RELEASE_TARBALL) | awk '{print $$1}'
+	@echo "==> Creating GitHub release $(VERSION)"
+	gh release create $(VERSION) $(RELEASE_TARBALL) \
+	  --title "$(VERSION)" \
+	  --notes "karpview $(VERSION)"
+	@rm -f $(RELEASE_BINARY) $(RELEASE_TARBALL)
+	@echo "==> Done. Update tap/Casks/karpview.rb with the SHA256 above, then push your tap repo."
 
 ## size: build stripped binary and report size vs 30 MB budget
 size:
