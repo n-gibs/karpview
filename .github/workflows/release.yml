@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: [VERSION]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        run: |
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binaries
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          for GOOS in darwin linux; do
+            for GOARCH in arm64 amd64; do
+              BINARY="karpview-${GOOS}-${GOARCH}"
+              echo "Building ${BINARY}..."
+              GOOS=$GOOS GOARCH=$GOARCH go build \
+                -ldflags="-s -w -X main.version=${TAG}" \
+                -o "${BINARY}" .
+              tar czf "${BINARY}.tar.gz" "${BINARY}"
+              rm "${BINARY}"
+            done
+          done
+
+      - name: Compute SHA256s
+        id: sha
+        run: |
+          echo "darwin_arm64=$(sha256sum karpview-darwin-arm64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "darwin_amd64=$(sha256sum karpview-darwin-amd64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+
+      - name: Extract changelog entry
+        id: changelog
+        run: |
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          awk "/^## \[${VERSION}\]/{found=1; next} found && /^## /{exit} found{print}" CHANGELOG.md \
+            > /tmp/release_notes.md
+          # Fall back to generic notes if section not found
+          if [ ! -s /tmp/release_notes.md ]; then
+            echo "See CHANGELOG.md for details." > /tmp/release_notes.md
+          fi
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "${TAG}" \
+            karpview-darwin-arm64.tar.gz \
+            karpview-darwin-amd64.tar.gz \
+            karpview-linux-arm64.tar.gz \
+            karpview-linux-amd64.tar.gz \
+            --title "${TAG}" \
+            --notes-file /tmp/release_notes.md
+
+      - name: Update Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SHA_ARM64: ${{ steps.sha.outputs.darwin_arm64 }}
+          SHA_AMD64: ${{ steps.sha.outputs.darwin_amd64 }}
+        run: |
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/n-gibs/homebrew-karpview.git" /tmp/tap
+
+          cat > /tmp/tap/Casks/karpview.rb << 'CASK'
+          cask "karpview" do
+            version "VERSION_PLACEHOLDER"
+
+            on_arm do
+              sha256 "SHA_ARM64_PLACEHOLDER"
+              url "https://github.com/n-gibs/karpview/releases/download/v#{version}/karpview-darwin-arm64.tar.gz"
+              binary "karpview-darwin-arm64", target: "karpview"
+            end
+
+            on_intel do
+              sha256 "SHA_AMD64_PLACEHOLDER"
+              url "https://github.com/n-gibs/karpview/releases/download/v#{version}/karpview-darwin-amd64.tar.gz"
+              binary "karpview-darwin-amd64", target: "karpview"
+            end
+
+            name "KarpView"
+            desc "Karpenter node disruption visualizer"
+            homepage "https://github.com/n-gibs/karpview"
+          end
+          CASK
+
+          sed -i "s/VERSION_PLACEHOLDER/${VERSION}/" /tmp/tap/Casks/karpview.rb
+          sed -i "s/SHA_ARM64_PLACEHOLDER/${SHA_ARM64}/" /tmp/tap/Casks/karpview.rb
+          sed -i "s/SHA_AMD64_PLACEHOLDER/${SHA_AMD64}/" /tmp/tap/Casks/karpview.rb
+
+          cd /tmp/tap
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add Casks/karpview.rb
+          git diff --staged --quiet || git commit -m "chore: update karpview to v${VERSION}"
+          git push

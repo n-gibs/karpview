@@ -1,6 +1,7 @@
 .PHONY: build test lint vet govulncheck clean bench bench-update bench-compare size release
 
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+FILE_VERSION := $(shell cat VERSION 2>/dev/null | tr -d '[:space:]')
+VERSION := $(if $(FILE_VERSION),v$(FILE_VERSION),$(shell git describe --tags --always --dirty 2>/dev/null || echo dev))
 
 build:
 	go build -ldflags="-s -w -X main.version=$(VERSION)" -o karpview .
@@ -44,9 +45,6 @@ RELEASE_TARBALL = karpview-$(VERSION)-darwin-$(ARCH).tar.gz
 RELEASE_BINARY  = karpview-darwin-$(ARCH)
 
 release:
-ifndef VERSION
-	$(error VERSION is required — e.g. make release VERSION=v0.1.0)
-endif
 	@echo "==> Building karpview $(VERSION) darwin/$(ARCH)"
 	GOOS=darwin GOARCH=$(ARCH) go build -ldflags="-s -w -X main.version=$(VERSION)" -o $(RELEASE_BINARY) .
 	tar czf $(RELEASE_TARBALL) $(RELEASE_BINARY)
