@@ -136,8 +136,8 @@ func Analyze(data *cluster.ClusterData) []NodeResult {
 
 // buildPoolStats computes node counts per NodePool from the existing Nodes slice.
 // Keyed by NodePool name. Nodes with pool "unknown" are counted under "unknown".
-func buildPoolStats(nodes []corev1.Node, nodePoolMap map[string]string) map[string]poolStats {
-	m := make(map[string]poolStats)
+func buildPoolStats(nodes []corev1.Node, nodePoolMap map[string]string) map[string]PoolStats {
+	m := make(map[string]PoolStats)
 	for i := range nodes {
 		node := &nodes[i]
 		pool := resolveNodePool(node, nodePoolMap)

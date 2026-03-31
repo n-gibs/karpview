@@ -3,15 +3,17 @@ package analyzer
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/nikgibson/karpview/internal/cluster"
 	"github.com/robfig/cron/v3"
 )
 
-// poolStats holds counts of nodes in a NodePool needed for budget headroom calculation.
-type poolStats struct {
+// PoolStats holds counts of nodes in a NodePool needed for budget headroom calculation.
+type PoolStats struct {
 	Total    int // all nodes in pool
 	Deleting int // DeletionTimestamp != nil
 	NotReady int // Ready condition = False or Unknown
@@ -119,7 +121,7 @@ type reasonHeadroom struct {
 // reason is the Karpenter disruption reason for this node ("Empty" or "Underutilized").
 // policy omits "Underutilized" from display when "WhenEmpty".
 // now is injected for deterministic testing.
-func evaluateBudgets(budgets []DisruptionBudget, reason string, policy string, stats poolStats, now time.Time) (headroom int, blocked bool, display string) {
+func evaluateBudgets(budgets []DisruptionBudget, reason string, policy string, stats PoolStats, now time.Time) (headroom int, blocked bool, display string) {
 	if len(budgets) == 0 {
 		h := poolHeadroom("10%", stats.Total, stats.Deleting, stats.NotReady)
 		return h, h == 0, fmt.Sprintf("default 10%% (%d/%d avail)", h, stats.Total)
@@ -189,7 +191,7 @@ func filterBudgets(budgets []DisruptionBudget, reason string) []DisruptionBudget
 
 // evaluateUniformBudgets handles the case where all budgets have no reason filter.
 // Takes the minimum headroom across all budgets.
-func evaluateUniformBudgets(budgets []DisruptionBudget, stats poolStats, now time.Time) (int, bool, string) {
+func evaluateUniformBudgets(budgets []DisruptionBudget, stats PoolStats, now time.Time) (int, bool, string) {
 	minH := math.MaxInt32
 	var schedDisplay string
 
@@ -247,7 +249,7 @@ func evaluateUniformBudgets(budgets []DisruptionBudget, stats poolStats, now tim
 // evaluateApplicableBudgets takes the minimum headroom across a pre-filtered set of budgets.
 // Returns (headroom, blocked, schedStr) where schedStr is non-empty only when a schedule
 // budget is the sole contributor and its window is inactive.
-func evaluateApplicableBudgets(budgets []DisruptionBudget, stats poolStats, now time.Time) (int, bool, string) {
+func evaluateApplicableBudgets(budgets []DisruptionBudget, stats PoolStats, now time.Time) (int, bool, string) {
 	minH := math.MaxInt32
 	var schedStr string
 
@@ -302,4 +304,91 @@ func formatPerReasonDisplay(results []reasonHeadroom, leadLabel string, total in
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+// BudgetRuleResult is the evaluated state of a single DisruptionBudget rule.
+type BudgetRuleResult struct {
+	Nodes        string   // raw value from spec: "20%" | "5" | "0"
+	Reasons      []string // nil = applies to all reasons
+	Schedule     string   // "" | "@daily" | "0 9 * * 1-5"
+	Duration     string   // "" | "10m" | "1h30m"
+	WindowActive bool     // true when no schedule, or schedule window is currently active
+	Headroom     int      // resolved node count available; 0 when window inactive
+	Blocked      bool     // true when WindowActive && Headroom == 0
+}
+
+// NodePoolBudgetSummary is the budget state for a single NodePool.
+type NodePoolBudgetSummary struct {
+	PoolName string
+	Policy   string    // "WhenEmpty" | "WhenEmptyOrUnderutilized" | ""
+	Stats    PoolStats // total / deleting / notready
+	Rules    []BudgetRuleResult
+}
+
+// analyzeBudgets is the testable core of AnalyzeBudgets. now is injected for
+// deterministic testing (same pattern as evaluateBudgets).
+func analyzeBudgets(data *cluster.ClusterData, now time.Time) []NodePoolBudgetSummary {
+	if data == nil {
+		return nil
+	}
+
+	nodePoolMap := buildNodePoolMap(data.NodeClaims)
+	nodePoolInfos := buildNodePoolInfoMap(data.NodePools)
+	statsMap := buildPoolStats(data.Nodes, nodePoolMap)
+
+	summaries := make([]NodePoolBudgetSummary, 0, len(data.NodePools))
+	for i := range data.NodePools {
+		name := data.NodePools[i].GetName()
+		if name == "" {
+			continue
+		}
+		info := nodePoolInfos[name]
+		stats := statsMap[name]
+
+		budgets := info.Budgets
+		if len(budgets) == 0 {
+			budgets = []DisruptionBudget{{Nodes: "10%"}}
+		}
+
+		rules := make([]BudgetRuleResult, 0, len(budgets))
+		for _, b := range budgets {
+			rule := BudgetRuleResult{
+				Nodes:    b.Nodes,
+				Reasons:  b.Reasons,
+				Schedule: b.Schedule,
+				Duration: b.Duration,
+			}
+			if b.Schedule == "" {
+				rule.WindowActive = true
+				rule.Headroom = poolHeadroom(b.Nodes, stats.Total, stats.Deleting, stats.NotReady)
+				rule.Blocked = rule.Headroom == 0
+			} else {
+				rule.WindowActive = scheduleWindowActive(b.Schedule, b.Duration, now)
+				if rule.WindowActive {
+					rule.Headroom = poolHeadroom(b.Nodes, stats.Total, stats.Deleting, stats.NotReady)
+					rule.Blocked = rule.Headroom == 0
+				}
+			}
+			rules = append(rules, rule)
+		}
+
+		summaries = append(summaries, NodePoolBudgetSummary{
+			PoolName: name,
+			Policy:   info.ConsolidationPolicy,
+			Stats:    stats,
+			Rules:    rules,
+		})
+	}
+
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].PoolName < summaries[j].PoolName
+	})
+
+	return summaries
+}
+
+// AnalyzeBudgets returns per-NodePool budget summaries for all NodePools in data.
+// Returns nil if data is nil. Results are sorted by pool name for stable output.
+func AnalyzeBudgets(data *cluster.ClusterData) []NodePoolBudgetSummary {
+	return analyzeBudgets(data, time.Now())
 }
