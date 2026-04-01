@@ -170,7 +170,7 @@ func evaluateBudgets(budgets []DisruptionBudget, reason, policy string, stats Po
 	}
 
 	if len(results) == 0 {
-		return 0, false, "—"
+		return 0, false, emDash
 	}
 
 	// Find overall minimum headroom
@@ -223,7 +223,7 @@ func evaluateUniformBudgets(budgets []DisruptionBudget, stats PoolStats, now tim
 		if schedDisplay != "" {
 			return 0, false, schedDisplay
 		}
-		return 0, false, "—"
+		return 0, false, emDash
 	}
 
 	if minH < 0 {

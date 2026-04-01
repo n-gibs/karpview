@@ -36,9 +36,9 @@ func classifyNode(node *corev1.Node, pods []*corev1.Pod) NodeConsolidation {
 			continue
 		}
 		totalCount++
-		for _, c := range pod.Spec.Containers {
-			cpuReq.Add(*c.Resources.Requests.Cpu())
-			memReq.Add(*c.Resources.Requests.Memory())
+		for ci := range pod.Spec.Containers {
+			cpuReq.Add(*pod.Spec.Containers[ci].Resources.Requests.Cpu())
+			memReq.Add(*pod.Spec.Containers[ci].Resources.Requests.Memory())
 		}
 	}
 

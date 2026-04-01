@@ -10,7 +10,7 @@ import (
 
 // helpers
 
-func runningPod(name, nodeName string, ownerKind string, cpuReq, memReq string) *corev1.Pod {
+func runningPod(name, nodeName, ownerKind, cpuReq, memReq string) *corev1.Pod {
 	p := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Spec: corev1.PodSpec{

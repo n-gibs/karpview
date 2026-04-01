@@ -87,16 +87,17 @@ func Print(w io.Writer, clusterName string, results []analyzer.NodeResult) {
 
 	blockedCount := 0
 	drainingCount := 0
-	for _, r := range results {
+	for i := range results {
+		r := &results[i]
 		status := formatStatus(r.Status, color)
-		reason := formatReason(r)
+		reason := formatReason(*r)
 
 		fmt.Fprintf(w, "%s  %-*s   NodePool: %-*s   %-*s   %-*s   %-*s   %s\n",
 			status,
 			maxName, sanitize(r.NodeName),
 			maxPool, sanitize(r.NodePool),
-			maxConsolidation, formatConsolidation(r),
-			maxPolicy, formatPolicy(r),
+			maxConsolidation, formatConsolidation(*r),
+			maxPolicy, formatPolicy(*r),
 			maxBudget, sanitize(r.BudgetDisplay),
 			reason,
 		)
@@ -208,7 +209,7 @@ func formatPolicy(r analyzer.NodeResult) string {
 	var policy string
 	switch r.NodePoolPolicy {
 	case policyWhenEmpty:
-		policy = "WhenEmpty"
+		policy = policyWhenEmpty
 	case "WhenEmptyOrUnderutilized":
 		policy = policyWhenUnderutilized
 	default:
@@ -217,7 +218,7 @@ func formatPolicy(r analyzer.NodeResult) string {
 	if r.ConsolidateAfter != "" {
 		policy = fmt.Sprintf("%s (%s)", policy, r.ConsolidateAfter)
 	}
-	if r.NodePoolPolicy == "WhenEmpty" && r.ConsolidationClass == analyzer.ConsolidationNormal {
+	if r.NodePoolPolicy == policyWhenEmpty && r.ConsolidationClass == analyzer.ConsolidationNormal {
 		policy += " [skip]"
 	}
 	return policy
