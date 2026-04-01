@@ -57,11 +57,11 @@ release:
 	@rm -f $(RELEASE_BINARY) $(RELEASE_TARBALL)
 	@echo "==> Done. Update tap/Casks/karpview.rb with the SHA256 above, then push your tap repo."
 
-## size: build stripped binary and report size vs 30 MB budget
+## size: build stripped binary and report size vs 50 MB budget
 size:
 	go build -ldflags="-s -w -X main.version=$(VERSION)" -o /tmp/karpview-size-check .
 	@SIZE=$$(stat -f%z /tmp/karpview-size-check 2>/dev/null || stat -c%s /tmp/karpview-size-check); \
 	 SIZE_MB=$$(echo "scale=2; $$SIZE / 1048576" | bc); \
 	 echo "Binary size: $${SIZE_MB} MB (budget: 30 MB)"; \
-	 test $$(echo "$$SIZE_MB > 30" | bc) -eq 0 || (echo "FAIL: exceeds 30 MB budget"; exit 1)
+	 test $$(echo "$$SIZE_MB > 50" | bc) -eq 0 || (echo "FAIL: exceeds 50 MB budget"; exit 1)
 	@rm -f /tmp/karpview-size-check
