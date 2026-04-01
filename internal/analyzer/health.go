@@ -61,7 +61,29 @@ func checkNodeHealth(node *corev1.Node) []string {
 // the NodeClaim's spec.expireAfter duration and creation timestamp.
 // Returns "" if nc is nil, expireAfter is absent, or expireAfter is "Never".
 func checkNodeExpiry(nc *unstructured.Unstructured, now time.Time) string {
-	return "" // implemented in Task 2
+	if nc == nil {
+		return ""
+	}
+	spec, ok := nc.Object["spec"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	raw, ok := spec["expireAfter"].(string)
+	if !ok || raw == "" || raw == "Never" {
+		return ""
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return ""
+	}
+	expiry := nc.GetCreationTimestamp().Time.Add(d)
+	if expiry.Before(now) {
+		return "expired"
+	}
+	if expiry.Before(now.Add(24 * time.Hour)) {
+		return "expiring"
+	}
+	return ""
 }
 
 // checkNodeDrift returns true when the NodeClaim has a Drifted=True status condition.
