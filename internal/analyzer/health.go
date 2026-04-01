@@ -89,15 +89,45 @@ func checkNodeExpiry(nc *unstructured.Unstructured, now time.Time) string {
 // checkNodeDrift returns true when the NodeClaim has a Drifted=True status condition.
 // Returns false if nc is nil.
 func checkNodeDrift(nc *unstructured.Unstructured) bool {
-	return false // implemented in Task 3
+	if nc == nil {
+		return false
+	}
+	status, ok := nc.Object["status"].(map[string]any)
+	if !ok {
+		return false
+	}
+	conditions, ok := status["conditions"].([]any)
+	if !ok {
+		return false
+	}
+	for _, raw := range conditions {
+		c, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if c["type"] == "Drifted" && c["status"] == "True" {
+			return true
+		}
+	}
+	return false
 }
 
 // formatDisruption builds the DISRUPTION column display value.
 // Returns "—" when no signals are present.
 // Signal order: health first, then drift, then expiry.
 func formatDisruption(issues []string, expiryState string, drifted bool) string {
-	return emDash // implemented in Task 3
+	var parts []string
+	if len(issues) > 0 {
+		parts = append(parts, "unhealthy:"+strings.Join(issues, ","))
+	}
+	if drifted {
+		parts = append(parts, "drifted")
+	}
+	if expiryState != "" {
+		parts = append(parts, expiryState)
+	}
+	if len(parts) == 0 {
+		return emDash
+	}
+	return strings.Join(parts, ",")
 }
-
-// placeholder to satisfy compiler — remove in Task 3
-var _ = strings.Join

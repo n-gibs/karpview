@@ -161,3 +161,90 @@ func TestCheckNodeExpiry_NotYet(t *testing.T) {
 		t.Errorf("want '' when >24h remaining, got %q", got)
 	}
 }
+
+func makeDriftNodeClaim(drifted bool) *unstructured.Unstructured {
+	conditions := []any{}
+	if drifted {
+		conditions = append(conditions, map[string]any{
+			"type":   "Drifted",
+			"status": "True",
+		})
+	} else {
+		conditions = append(conditions, map[string]any{
+			"type":   "Drifted",
+			"status": "False",
+		})
+	}
+	return &unstructured.Unstructured{Object: map[string]any{
+		"status": map[string]any{"conditions": conditions},
+	}}
+}
+
+func TestCheckNodeDrift_NilClaim(t *testing.T) {
+	if checkNodeDrift(nil) {
+		t.Error("want false for nil claim")
+	}
+}
+
+func TestCheckNodeDrift_False(t *testing.T) {
+	nc := makeDriftNodeClaim(false)
+	if checkNodeDrift(nc) {
+		t.Error("want false when Drifted=False")
+	}
+}
+
+func TestCheckNodeDrift_True(t *testing.T) {
+	nc := makeDriftNodeClaim(true)
+	if !checkNodeDrift(nc) {
+		t.Error("want true when Drifted=True")
+	}
+}
+
+func TestCheckNodeDrift_NoConditions(t *testing.T) {
+	nc := &unstructured.Unstructured{Object: map[string]any{
+		"status": map[string]any{},
+	}}
+	if checkNodeDrift(nc) {
+		t.Error("want false when no conditions")
+	}
+}
+
+func TestFormatDisruption_None(t *testing.T) {
+	if got := formatDisruption(nil, "", false); got != emDash {
+		t.Errorf("want emDash, got %q", got)
+	}
+}
+
+func TestFormatDisruption_HealthOnly(t *testing.T) {
+	got := formatDisruption([]string{"MemoryPressure"}, "", false)
+	if got != "unhealthy:MemoryPressure" {
+		t.Errorf("want 'unhealthy:MemoryPressure', got %q", got)
+	}
+}
+
+func TestFormatDisruption_MultiHealth(t *testing.T) {
+	got := formatDisruption([]string{"MemoryPressure", "DiskPressure"}, "", false)
+	if got != "unhealthy:MemoryPressure,DiskPressure" {
+		t.Errorf("want 'unhealthy:MemoryPressure,DiskPressure', got %q", got)
+	}
+}
+
+func TestFormatDisruption_DriftOnly(t *testing.T) {
+	if got := formatDisruption(nil, "", true); got != "drifted" {
+		t.Errorf("want 'drifted', got %q", got)
+	}
+}
+
+func TestFormatDisruption_ExpiryOnly(t *testing.T) {
+	if got := formatDisruption(nil, "expiring", false); got != "expiring" {
+		t.Errorf("want 'expiring', got %q", got)
+	}
+}
+
+func TestFormatDisruption_Mixed(t *testing.T) {
+	// health, drift, expiry — priority order: health, drift, expiry
+	got := formatDisruption([]string{"Ready"}, "expired", true)
+	if got != "unhealthy:Ready,drifted,expired" {
+		t.Errorf("want 'unhealthy:Ready,drifted,expired', got %q", got)
+	}
+}
