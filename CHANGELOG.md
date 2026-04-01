@@ -3,6 +3,11 @@
 All notable changes to this project will be documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## [0.1.1] - 2026-04-01
+
+### Fixed
+- Removed unnecessary rbac.yaml — CLI inherits user kubeconfig permissions
+
 ## [0.1.0] - 2026-03-31
 
 ### Added
