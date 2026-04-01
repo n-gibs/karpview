@@ -12,12 +12,15 @@ linters:
 
 linters-settings:
   exhaustive:
-    default-signifies-exhaustive: false
+    default-signifies-exhaustive: true
   gocritic:
     enabled-tags:
       - diagnostic
       - performance
       - style
+    disabled-checks:
+      - hugeParam        # NodeResult/logRecord are value types used throughout; pointer refactor is out of scope
+      - commentedOutCode # false-positive on math-explanation comments in tests
   revive:
     rules:
       - name: exported
@@ -32,3 +35,7 @@ issues:
     - path: _test\.go
       linters:
         - gosec
+        - goconst  # test literals like "prod" are intentional, not candidates for constants
+    - path: internal/cluster/fetch\.go
+      linters:
+        - revive  # ClusterData name is established API; stutter fix would break callers

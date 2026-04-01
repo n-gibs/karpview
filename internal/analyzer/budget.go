@@ -12,6 +12,13 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
+const (
+	policyWhenEmpty      = "WhenEmpty"
+	reasonUnderutilized  = "Underutilized"
+	reasonEmpty          = "Empty"
+	reasonDrifted        = "Drifted"
+)
+
 // PoolStats holds counts of nodes in a NodePool needed for budget headroom calculation.
 type PoolStats struct {
 	Total    int // all nodes in pool
@@ -89,11 +96,11 @@ func parseDuration(s string) (time.Duration, error) {
 // reasonLabel returns the single-letter label for a disruption reason.
 func reasonLabel(reason string) string {
 	switch reason {
-	case "Empty":
+	case reasonEmpty:
 		return "E"
-	case "Underutilized":
+	case reasonUnderutilized:
 		return "U"
-	case "Drifted":
+	case reasonDrifted:
 		return "D"
 	default:
 		return reason
@@ -121,7 +128,7 @@ type reasonHeadroom struct {
 // reason is the Karpenter disruption reason for this node ("Empty" or "Underutilized").
 // policy omits "Underutilized" from display when "WhenEmpty".
 // now is injected for deterministic testing.
-func evaluateBudgets(budgets []DisruptionBudget, reason string, policy string, stats PoolStats, now time.Time) (headroom int, blocked bool, display string) {
+func evaluateBudgets(budgets []DisruptionBudget, reason, policy string, stats PoolStats, now time.Time) (headroom int, blocked bool, display string) {
 	if len(budgets) == 0 {
 		h := poolHeadroom("10%", stats.Total, stats.Deleting, stats.NotReady)
 		return h, h == 0, fmt.Sprintf("default 10%% (%d/%d avail)", h, stats.Total)
@@ -129,7 +136,7 @@ func evaluateBudgets(budgets []DisruptionBudget, reason string, policy string, s
 
 	// Determine which reasons to evaluate for display
 	evalReasons := []string{"Empty", "Underutilized", "Drifted"}
-	if policy == "WhenEmpty" {
+	if policy == policyWhenEmpty {
 		evalReasons = []string{"Empty", "Drifted"}
 	}
 
@@ -191,7 +198,7 @@ func filterBudgets(budgets []DisruptionBudget, reason string) []DisruptionBudget
 
 // evaluateUniformBudgets handles the case where all budgets have no reason filter.
 // Takes the minimum headroom across all budgets.
-func evaluateUniformBudgets(budgets []DisruptionBudget, stats PoolStats, now time.Time) (int, bool, string) {
+func evaluateUniformBudgets(budgets []DisruptionBudget, stats PoolStats, now time.Time) (headroom int, blocked bool, display string) {
 	minH := math.MaxInt32
 	var schedDisplay string
 
@@ -222,7 +229,7 @@ func evaluateUniformBudgets(budgets []DisruptionBudget, stats PoolStats, now tim
 	if minH < 0 {
 		minH = 0
 	}
-	blocked := minH == 0
+	blocked = minH == 0
 
 	// Find the first non-schedule budget for display label
 	displayNodes := budgets[0].Nodes
@@ -249,9 +256,8 @@ func evaluateUniformBudgets(budgets []DisruptionBudget, stats PoolStats, now tim
 // evaluateApplicableBudgets takes the minimum headroom across a pre-filtered set of budgets.
 // Returns (headroom, blocked, schedStr) where schedStr is non-empty only when a schedule
 // budget is the sole contributor and its window is inactive.
-func evaluateApplicableBudgets(budgets []DisruptionBudget, stats PoolStats, now time.Time) (int, bool, string) {
+func evaluateApplicableBudgets(budgets []DisruptionBudget, stats PoolStats, now time.Time) (headroom int, blocked bool, schedStr string) {
 	minH := math.MaxInt32
-	var schedStr string
 
 	for _, b := range budgets {
 		if b.Schedule != "" {

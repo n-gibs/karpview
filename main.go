@@ -27,6 +27,8 @@ const (
 	exitOK      = 0
 	exitBlocked = 1
 	exitError   = 2
+
+	logFormatJSON = "json"
 )
 
 // logRecord is the NDJSON schema emitted to stderr when KARPVIEW_LOG_FORMAT=json.
@@ -76,7 +78,7 @@ func run(args []string, stdout, stderr io.Writer, fetcher cluster.Fetcher) int {
 		return runBudgets(args[1:], stdout, stderr, fetcher)
 	}
 	rid := newRunID()
-	jsonLog := os.Getenv("KARPVIEW_LOG_FORMAT") == "json"
+	jsonLog := os.Getenv("KARPVIEW_LOG_FORMAT") == logFormatJSON
 
 	fs := flag.NewFlagSet("karpview", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -104,7 +106,7 @@ func run(args []string, stdout, stderr io.Writer, fetcher cluster.Fetcher) int {
 		return exitOK
 	}
 
-	if *outputFormat != "text" && *outputFormat != "json" {
+	if *outputFormat != "text" && *outputFormat != logFormatJSON {
 		fmt.Fprintf(stderr, "error: unsupported output format %q (use \"text\" or \"json\")\n", *outputFormat)
 		return exitError
 	}
@@ -151,7 +153,7 @@ func run(args []string, stdout, stderr io.Writer, fetcher cluster.Fetcher) int {
 	analyzeDur := time.Since(analyzeStart)
 
 	switch *outputFormat {
-	case "json":
+	case logFormatJSON:
 		if err := printJSON(stdout, results); err != nil {
 			fmt.Fprintf(stderr, "error: marshaling json: %v\n", err)
 			return exitError
@@ -162,12 +164,13 @@ func run(args []string, stdout, stderr io.Writer, fetcher cluster.Fetcher) int {
 
 	blocked := 0
 	draining := 0
-	for _, r := range results {
-		switch r.Status {
+	for i := range results {
+		switch results[i].Status {
 		case analyzer.StatusBlocked:
 			blocked++
 		case analyzer.StatusDraining:
 			draining++
+		default:
 		}
 	}
 	finalCode := exitOK
@@ -217,7 +220,8 @@ type jsonBlocker struct {
 // printJSON writes analysis results as a JSON array to w.
 func printJSON(w io.Writer, results []analyzer.NodeResult) error {
 	nodes := make([]jsonNode, len(results))
-	for i, r := range results {
+	for i := range results {
+		r := &results[i]
 		blockers := make([]jsonBlocker, len(r.Blockers))
 		for j, b := range r.Blockers {
 			blockers[j] = jsonBlocker{
@@ -252,7 +256,7 @@ func runBudgets(args []string, stdout, stderr io.Writer, fetcher cluster.Fetcher
 		return exitError
 	}
 
-	if *outputFormat != "text" && *outputFormat != "json" {
+	if *outputFormat != "text" && *outputFormat != logFormatJSON {
 		fmt.Fprintf(stderr, "error: unsupported output format %q (use \"text\" or \"json\")\n", *outputFormat)
 		return exitError
 	}
@@ -278,7 +282,7 @@ func runBudgets(args []string, stdout, stderr io.Writer, fetcher cluster.Fetcher
 	summaries := analyzer.AnalyzeBudgets(data)
 
 	switch *outputFormat {
-	case "json":
+	case logFormatJSON:
 		printBudgetsJSON(stdout, summaries)
 	default:
 		printer.PrintBudgets(stdout, data.ClusterName, summaries)

@@ -11,6 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
+const emDash = "—"
+
 // NodeStatus represents whether a node is blocked from consolidation.
 type NodeStatus string
 
@@ -97,7 +99,7 @@ func Analyze(data *cluster.ClusterData) []NodeResult {
 		var budgetBlocked bool
 		var budgetDisplay string
 		if _, inMap := nodePoolInfos[poolName]; !inMap {
-			budgetDisplay = "—"
+			budgetDisplay = emDash
 		} else {
 			var budgetHeadroom int
 			budgetHeadroom, budgetBlocked, budgetDisplay = evaluateBudgets(

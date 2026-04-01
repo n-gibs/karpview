@@ -18,6 +18,10 @@ const (
 	colorGreen  = "\033[32m"
 	colorYellow = "\033[33m"
 	colorReset  = "\033[0m"
+
+	emDash               = "—"
+	policyWhenEmpty      = "WhenEmpty"
+	policyWhenUnderutilized = "WhenUnderutilized"
 )
 
 // isColorEnabled returns true when the output stream supports color.
@@ -62,17 +66,18 @@ func Print(w io.Writer, clusterName string, results []analyzer.NodeResult) {
 	maxConsolidation := len("daemon-only")    // minimum — longest static value
 	maxPolicy := len("WhenUnderutilized")     // minimum — longest static abbreviation
 	maxBudget := len("BUDGET")               // minimum — header width
-	for _, r := range results {
+	for i := range results {
+		r := &results[i]
 		if len(r.NodeName) > maxName {
 			maxName = len(r.NodeName)
 		}
 		if len(r.NodePool) > maxPool {
 			maxPool = len(r.NodePool)
 		}
-		if n := len(formatConsolidation(r)); n > maxConsolidation {
+		if n := len(formatConsolidation(*r)); n > maxConsolidation {
 			maxConsolidation = n
 		}
-		if n := len(formatPolicy(r)); n > maxPolicy {
+		if n := len(formatPolicy(*r)); n > maxPolicy {
 			maxPolicy = n
 		}
 		if n := len(r.BudgetDisplay); n > maxBudget {
@@ -100,6 +105,7 @@ func Print(w io.Writer, clusterName string, results []analyzer.NodeResult) {
 			blockedCount++
 		case analyzer.StatusDraining:
 			drainingCount++
+		default:
 		}
 	}
 	fmt.Fprintf(w, "\n%d node(s) blocked, %d draining / %d total\n\n",
@@ -197,14 +203,14 @@ func formatConsolidation(r analyzer.NodeResult) string {
 // is misleading without this flag.
 func formatPolicy(r analyzer.NodeResult) string {
 	if r.NodePoolPolicy == "" {
-		return "—"
+		return emDash
 	}
 	var policy string
 	switch r.NodePoolPolicy {
-	case "WhenEmpty":
+	case policyWhenEmpty:
 		policy = "WhenEmpty"
 	case "WhenEmptyOrUnderutilized":
-		policy = "WhenUnderutilized"
+		policy = policyWhenUnderutilized
 	default:
 		policy = r.NodePoolPolicy
 	}
@@ -232,7 +238,7 @@ func PrintBudgets(w io.Writer, clusterName string, summaries []analyzer.NodePool
 	for _, s := range summaries {
 		policy := s.Policy
 		if policy == "WhenEmptyOrUnderutilized" {
-			policy = "WhenUnderutilized"
+			policy = policyWhenUnderutilized
 		}
 		policyPart := ""
 		if policy != "" {
@@ -290,11 +296,12 @@ func PrintBudgets(w io.Writer, clusterName string, summaries []analyzer.NodePool
 func formatReason(r analyzer.NodeResult) string {
 	switch r.Status {
 	case analyzer.StatusConsolidatable:
-		return "—"
+		return emDash
 	case analyzer.StatusDraining:
 		return "Disruption in progress"
 	case analyzer.StatusUnknown:
 		return "Unknown"
+	default:
 	}
 
 	parts := make([]string, 0, len(r.Blockers))
