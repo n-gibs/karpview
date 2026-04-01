@@ -16,4 +16,11 @@ cask "karpview" do
   name "KarpView"
   desc "Karpenter node disruption visualizer"
   homepage "https://github.com/n-gibs/karpview"
+
+  caveats <<~EOS
+    karpview is not signed with an Apple Developer ID.
+    If macOS blocks the binary, run:
+      xattr -d com.apple.quarantine $(which karpview)
+    Or go to System Settings > Privacy & Security and click "Allow Anyway".
+  EOS
 end
