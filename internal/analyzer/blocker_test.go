@@ -823,3 +823,51 @@ func TestAnalyze_BudgetPolicyWhenEmpty_OmitsU(t *testing.T) {
 		t.Errorf("WhenEmpty pool should omit U:, got %q", results[0].BudgetDisplay)
 	}
 }
+
+func TestAnalyze_DrainingNodeShowsDisruption(t *testing.T) {
+	n := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "draining-node"},
+		Spec: corev1.NodeSpec{
+			Taints: []corev1.Taint{{
+				Key:    "karpenter.sh/disrupted",
+				Effect: corev1.TaintEffectNoSchedule,
+			}},
+		},
+		Status: corev1.NodeStatus{
+			Conditions: []corev1.NodeCondition{{
+				Type:   corev1.NodeMemoryPressure,
+				Status: corev1.ConditionTrue,
+			}},
+		},
+	}
+	data := &cluster.ClusterData{Nodes: []corev1.Node{n}}
+	results := Analyze(data)
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	r := results[0]
+	if r.Status != StatusDraining {
+		t.Errorf("want DRAINING, got %s", r.Status)
+	}
+	if r.DisruptionDisplay != "unhealthy:MemoryPressure" {
+		t.Errorf("want DisruptionDisplay=%q, got %q", "unhealthy:MemoryPressure", r.DisruptionDisplay)
+	}
+	if len(r.HealthIssues) != 1 || r.HealthIssues[0] != "MemoryPressure" {
+		t.Errorf("want HealthIssues=[MemoryPressure], got %v", r.HealthIssues)
+	}
+}
+
+func TestAnalyze_NilClaimNodeNoDisruption(t *testing.T) {
+	// Node with no NodeClaim — nodeClaimMap lookup returns nil — should show emDash
+	n := corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "clean-node"},
+	}
+	data := &cluster.ClusterData{Nodes: []corev1.Node{n}}
+	results := Analyze(data)
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	if results[0].DisruptionDisplay != emDash {
+		t.Errorf("want DisruptionDisplay=%q, got %q", emDash, results[0].DisruptionDisplay)
+	}
+}

@@ -60,6 +60,10 @@ type NodeResult struct {
 	ConsolidateAfter    string  // e.g. "30s" | "Never" | ""
 	BudgetDisplay       string  // pre-formatted BUDGET column value
 	BudgetBlocked       bool    // true if effective headroom <= 0
+	HealthIssues        []string // adverse node conditions e.g. ["MemoryPressure"]
+	ExpiryState         string   // "" | "expiring" | "expired"
+	Drifted             bool     // NodeClaim has Drifted=True condition
+	DisruptionDisplay   string   // pre-formatted DISRUPTION column value
 }
 
 // ExitCode returns 1 if any node is blocked, 0 otherwise.
@@ -77,6 +81,11 @@ func ExitCode(results []NodeResult) int {
 // Analyze is a pure function that determines which nodes are blocked
 // from Karpenter consolidation and why.
 func Analyze(data *cluster.ClusterData) []NodeResult {
+	return analyze(data, time.Now())
+}
+
+// analyze is the testable core of Analyze. now is injected for deterministic testing.
+func analyze(data *cluster.ClusterData, now time.Time) []NodeResult {
 	if data == nil {
 		return nil
 	}
@@ -84,8 +93,9 @@ func Analyze(data *cluster.ClusterData) []NodeResult {
 	nodePoolMap := buildNodePoolMap(data.NodeClaims)
 	nodePoolInfos := buildNodePoolInfoMap(data.NodePools)
 	podsByNode := indexPodsByNode(data.Pods)
-	pdbEntries := compilePDBSelectors(data.PDBs) // pre-compile once, O(PDBs)
+	pdbEntries := compilePDBSelectors(data.PDBs)
 	statsMap := buildPoolStats(data.Nodes, nodePoolMap)
+	nodeClaimMap := buildNodeClaimMap(data.NodeClaims)
 
 	results := make([]NodeResult, 0, len(data.Nodes))
 	for i := range data.Nodes {
@@ -103,10 +113,16 @@ func Analyze(data *cluster.ClusterData) []NodeResult {
 		} else {
 			var budgetHeadroom int
 			budgetHeadroom, budgetBlocked, budgetDisplay = evaluateBudgets(
-				npInfo.Budgets, reason, npInfo.ConsolidationPolicy, stats, time.Now(),
+				npInfo.Budgets, reason, npInfo.ConsolidationPolicy, stats, now,
 			)
-			_ = budgetHeadroom // headroom exposed via BudgetBlocked; reserved for future use
+			_ = budgetHeadroom
 		}
+
+		nc := nodeClaimMap[node.Name]
+		healthIssues := checkNodeHealth(node)
+		expiryState := checkNodeExpiry(nc, now)
+		drifted := checkNodeDrift(nc)
+		disruptionDisplay := formatDisruption(healthIssues, expiryState, drifted)
 
 		if isDraining(node) {
 			results = append(results, NodeResult{
@@ -120,6 +136,10 @@ func Analyze(data *cluster.ClusterData) []NodeResult {
 				ConsolidateAfter:   npInfo.ConsolidateAfter,
 				BudgetDisplay:      budgetDisplay,
 				BudgetBlocked:      budgetBlocked,
+				HealthIssues:       healthIssues,
+				ExpiryState:        expiryState,
+				Drifted:            drifted,
+				DisruptionDisplay:  disruptionDisplay,
 			})
 			continue
 		}
@@ -131,6 +151,10 @@ func Analyze(data *cluster.ClusterData) []NodeResult {
 		result.ConsolidateAfter = npInfo.ConsolidateAfter
 		result.BudgetDisplay = budgetDisplay
 		result.BudgetBlocked = budgetBlocked
+		result.HealthIssues = healthIssues
+		result.ExpiryState = expiryState
+		result.Drifted = drifted
+		result.DisruptionDisplay = disruptionDisplay
 		results = append(results, result)
 	}
 	return results
