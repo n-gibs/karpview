@@ -203,10 +203,13 @@ func run(args []string, stdout, stderr io.Writer, fetcher cluster.Fetcher) int {
 
 // jsonNode is the JSON representation of a node analysis result.
 type jsonNode struct {
-	NodeName string        `json:"nodeName"`
-	NodePool string        `json:"nodePool"`
-	Status   string        `json:"status"`
-	Blockers []jsonBlocker `json:"blockers"`
+	NodeName     string        `json:"nodeName"`
+	NodePool     string        `json:"nodePool"`
+	Status       string        `json:"status"`
+	Blockers     []jsonBlocker `json:"blockers"`
+	HealthIssues []string      `json:"healthIssues"`
+	ExpiryState  string        `json:"expiryState"`
+	Drifted      bool          `json:"drifted"`
 }
 
 // jsonBlocker is the JSON representation of a single consolidation blocker.
@@ -232,10 +235,13 @@ func printJSON(w io.Writer, results []analyzer.NodeResult) error {
 			}
 		}
 		nodes[i] = jsonNode{
-			NodeName: r.NodeName,
-			NodePool: r.NodePool,
-			Status:   string(r.Status),
-			Blockers: blockers,
+			NodeName:     r.NodeName,
+			NodePool:     r.NodePool,
+			Status:       string(r.Status),
+			Blockers:     blockers,
+			HealthIssues: r.HealthIssues,
+			ExpiryState:  r.ExpiryState,
+			Drifted:      r.Drifted,
 		}
 	}
 	enc := json.NewEncoder(w)

@@ -290,3 +290,49 @@ func TestRunBudgets_Integration(t *testing.T) {
 		}
 	})
 }
+
+func TestRun_JSON_HealthIssues(t *testing.T) {
+	nc := unstructured.Unstructured{Object: map[string]any{
+		"status": map[string]any{"nodeName": "node-1"},
+	}}
+	fetcher := &fakeFetcher{
+		data: &cluster.ClusterData{
+			ClusterName: "test-cluster",
+			Nodes: []corev1.Node{{
+				ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
+				Status: corev1.NodeStatus{
+					Conditions: []corev1.NodeCondition{{
+						Type:   corev1.NodeMemoryPressure,
+						Status: corev1.ConditionTrue,
+					}},
+				},
+			}},
+			NodeClaims: []unstructured.Unstructured{nc},
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-o", "json"}, &stdout, &stderr, fetcher)
+	if code != 0 {
+		t.Fatalf("want exit 0, got %d (stderr: %s)", code, stderr.String())
+	}
+
+	var nodes []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &nodes); err != nil {
+		t.Fatalf("invalid JSON: %v\noutput: %s", err, stdout.String())
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("want 1 node, got %d", len(nodes))
+	}
+
+	issues, ok := nodes[0]["healthIssues"].([]any)
+	if !ok || len(issues) != 1 || issues[0] != "MemoryPressure" {
+		t.Errorf("want healthIssues=[MemoryPressure], got %v", nodes[0]["healthIssues"])
+	}
+	if nodes[0]["expiryState"] != "" && nodes[0]["expiryState"] != nil {
+		t.Errorf("want empty expiryState, got %v", nodes[0]["expiryState"])
+	}
+	if nodes[0]["drifted"] != false {
+		t.Errorf("want drifted=false, got %v", nodes[0]["drifted"])
+	}
+}
