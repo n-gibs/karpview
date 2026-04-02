@@ -455,3 +455,54 @@ func TestPrintBudgets(t *testing.T) {
 		t.Errorf("expected '1 with blocked budgets' in footer; got:\n%s", out)
 	}
 }
+
+func TestPrint_DisruptionColumn(t *testing.T) {
+	results := []analyzer.NodeResult{
+		{
+			NodeName:           "clean-node",
+			NodePool:           "default",
+			Status:             analyzer.StatusConsolidatable,
+			ConsolidationClass: analyzer.ConsolidationNormal,
+			DisruptionDisplay:  "—",
+		},
+		{
+			NodeName:           "unhealthy-node",
+			NodePool:           "default",
+			Status:             analyzer.StatusConsolidatable,
+			ConsolidationClass: analyzer.ConsolidationNormal,
+			HealthIssues:       []string{"MemoryPressure"},
+			DisruptionDisplay:  "unhealthy:MemoryPressure",
+		},
+		{
+			NodeName:           "expiring-node",
+			NodePool:           "default",
+			Status:             analyzer.StatusConsolidatable,
+			ConsolidationClass: analyzer.ConsolidationNormal,
+			ExpiryState:        "expiring",
+			DisruptionDisplay:  "expiring",
+		},
+		{
+			NodeName:           "drifted-expired-node",
+			NodePool:           "default",
+			Status:             analyzer.StatusConsolidatable,
+			ConsolidationClass: analyzer.ConsolidationNormal,
+			Drifted:            true,
+			ExpiryState:        "expired",
+			DisruptionDisplay:  "drifted,expired",
+		},
+	}
+
+	var buf bytes.Buffer
+	Print(&buf, "test-cluster", results)
+	out := buf.String()
+
+	for _, want := range []string{
+		"unhealthy:MemoryPressure",
+		"expiring",
+		"drifted,expired",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in output; got:\n%s", want, out)
+		}
+	}
+}

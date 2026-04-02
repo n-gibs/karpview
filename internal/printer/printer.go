@@ -66,6 +66,7 @@ func Print(w io.Writer, clusterName string, results []analyzer.NodeResult) {
 	maxConsolidation := len("daemon-only")    // minimum — longest static value
 	maxPolicy := len("WhenUnderutilized")     // minimum — longest static abbreviation
 	maxBudget := len("BUDGET")               // minimum — header width
+	maxDisruption := len("DISRUPTION")       // minimum — header width
 	for i := range results {
 		r := &results[i]
 		if len(r.NodeName) > maxName {
@@ -83,6 +84,9 @@ func Print(w io.Writer, clusterName string, results []analyzer.NodeResult) {
 		if n := len(r.BudgetDisplay); n > maxBudget {
 			maxBudget = n
 		}
+		if n := len(r.DisruptionDisplay); n > maxDisruption {
+			maxDisruption = n
+		}
 	}
 
 	blockedCount := 0
@@ -92,13 +96,14 @@ func Print(w io.Writer, clusterName string, results []analyzer.NodeResult) {
 		status := formatStatus(r.Status, color)
 		reason := formatReason(*r)
 
-		fmt.Fprintf(w, "%s  %-*s   NodePool: %-*s   %-*s   %-*s   %-*s   %s\n",
+		fmt.Fprintf(w, "%s  %-*s   NodePool: %-*s   %-*s   %-*s   %-*s   %s   %s\n",
 			status,
 			maxName, sanitize(r.NodeName),
 			maxPool, sanitize(r.NodePool),
 			maxConsolidation, formatConsolidation(*r),
 			maxPolicy, formatPolicy(*r),
 			maxBudget, sanitize(r.BudgetDisplay),
+			formatDisruptionCol(*r, maxDisruption, color),
 			reason,
 		)
 		switch r.Status {
@@ -326,4 +331,24 @@ func formatReason(r analyzer.NodeResult) string {
 		}
 	}
 	return strings.Join(parts, ", ")
+}
+
+// formatDisruptionCol returns the DISRUPTION column value, padded to maxWidth
+// and optionally colored. Color is determined from raw NodeResult fields —
+// not by parsing DisruptionDisplay — so that mixed signals get the
+// highest-severity color (red > yellow).
+func formatDisruptionCol(r analyzer.NodeResult, maxWidth int, color bool) string {
+	raw := sanitize(r.DisruptionDisplay)
+	pad := strings.Repeat(" ", maxWidth-len(raw))
+	if !color || raw == emDash {
+		return raw + pad
+	}
+	if r.ExpiryState == "expired" {
+		return colorRed + raw + colorReset + pad
+	}
+	// yellow for: unhealthy, drifted, expiring
+	if len(r.HealthIssues) > 0 || r.Drifted || r.ExpiryState == "expiring" {
+		return colorYellow + raw + colorReset + pad
+	}
+	return raw + pad
 }
