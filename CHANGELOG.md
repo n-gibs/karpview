@@ -3,6 +3,15 @@
 All notable changes to this project will be documented in this file.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
+## [0.2.0] - 2026-04-01
+
+### Added
+- `DISRUPTION` column showing forceful-disruption signals alongside consolidation analysis
+- Node health detection: `Ready=False/Unknown`, `MemoryPressure`, `DiskPressure`, `PIDPressure` conditions (H1)
+- Node expiry detection: warns when `expireAfter` deadline is within 24h or already past (H2)
+- Drift detection: surfaces NodeClaims with `Drifted=True` status condition (H3)
+- JSON output includes `healthIssues`, `expiryState`, `drifted` fields
+
 ## [0.1.1] - 2026-04-01
 
 ### Fixed
