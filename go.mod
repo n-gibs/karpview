@@ -4,7 +4,7 @@ go 1.25.8
 
 require (
 	github.com/robfig/cron/v3 v3.0.1
-	golang.org/x/sync v0.20.0
+	golang.org/x/sync v0.21.0
 	golang.org/x/term v0.25.0
 	k8s.io/api v0.32.3
 	k8s.io/apimachinery v0.32.3
